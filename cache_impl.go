@@ -78,6 +78,11 @@ func zeroValue[V any]() V {
 // cache is a structure performs a best-effort bounding of a hash table using eviction algorithm
 // to determine which entries to evict when the capacity is exceeded.
 type cache[K comparable, V any] struct {
+	// background cleanup
+	context       context.Context
+	contextCancel context.CancelFunc
+	wg            sync.WaitGroup
+
 	drainStatus        atomic.Uint32
 	_                  [xruntime.CacheLineSize - 4]byte
 	nodeManager        *node.Manager[K, V]
@@ -94,7 +99,6 @@ type cache[K comparable, V any] struct {
 	executor           func(fn func())
 	singleflight       *group[K, V]
 	evictionMutex      sync.Mutex
-	doneClose          chan struct{}
 	weigher            func(key K, value V) uint32
 	onDeletion         func(e DeletionEvent[K, V])
 	onAtomicDeletion   func(e DeletionEvent[K, V])
@@ -140,7 +144,11 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		statsSnapshoter = &stats.NoopRecorder{}
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	c := &cache[K, V]{
+		context:            ctx,
+		contextCancel:      cancel,
 		nodeManager:        nodeManager,
 		hashmap:            hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
 		stats:              statsRecorder,
@@ -190,8 +198,8 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		c.clock.Init()
 	}
 	if c.withExpiration {
-		c.doneClose = make(chan struct{})
-		go c.periodicCleanUp()
+		c.wg.Add(1)
+		go c.periodicCleanUp(&c.wg)
 	}
 
 	if c.withEviction {
@@ -1267,11 +1275,13 @@ func (c *cache[K, V]) notifyAtomicDeletion(key K, value V, cause DeletionCause) 
 	})
 }
 
-func (c *cache[K, V]) periodicCleanUp() {
+func (c *cache[K, V]) periodicCleanUp(wg *sync.WaitGroup) {
+	defer wg.Done()
+
 	tick := c.clock.Tick(time.Second)
 	for {
 		select {
-		case <-c.doneClose:
+		case <-c.context.Done():
 			return
 		case <-tick:
 			c.CleanUp()
@@ -1708,13 +1718,12 @@ func (c *cache[K, V]) GetMaximum() uint64 {
 	return result
 }
 
-// close discards all entries in the cache and stop all goroutines.
+// Close discards all entries in the cache and stop all goroutines.
 //
 // NOTE: this operation must be performed when no requests are made to the cache otherwise the behavior is undefined.
-func (c *cache[K, V]) close() {
-	if c.withExpiration {
-		c.doneClose <- struct{}{}
-	}
+func (c *cache[K, V]) Close() {
+	c.contextCancel()
+	c.wg.Wait()
 }
 
 // EstimatedSize returns the approximate number of entries in this cache. The value returned is an estimate; the

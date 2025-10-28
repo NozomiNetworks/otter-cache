@@ -17,7 +17,6 @@ package otter
 import (
 	"context"
 	"iter"
-	"runtime"
 	"time"
 
 	"github.com/maypok86/otter/v2/stats"
@@ -90,11 +89,12 @@ func New[K comparable, V any](o *Options[K, V]) (*Cache[K, V], error) {
 	c := &Cache[K, V]{
 		cache: cacheImpl,
 	}
-	runtime.AddCleanup(c, func(cacheImpl *cache[K, V]) {
-		cacheImpl.close()
-	}, cacheImpl)
 
 	return c, nil
+}
+
+func (c *Cache[K, V]) Close() {
+	c.cache.Close()
 }
 
 // GetIfPresent returns the value associated with the key in this cache.

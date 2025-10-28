@@ -396,6 +396,7 @@ func gcHelper(t *testing.T) *atomic.Bool {
 		MaximumSize:      size,
 		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
 	})
+	defer c.Close()
 
 	var cleaned atomic.Bool
 	runtime.AddCleanup(c.cache, func(c *atomic.Bool) {
